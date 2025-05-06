@@ -1,0 +1,98 @@
+target Python
+
+reactor MAPE(model_data = {= { } =}, window = 9, latency_ref = 30.0, epsilon = 0.2, alpha = 0.5) {
+    input confidence
+    input latency
+    input current_model
+
+    output selected_model
+
+    logical action next
+
+    preamble{=
+        import random
+    =}
+
+    state step = 0
+    state beta = {= 2 / (self.window + 1 ) =}
+
+    method compute_score(model_name, rt_accuracy, rt_latency){=
+        # print(f"\nComputing score for model: {model_name}")
+        # print(f"Current accuracy: {rt_accuracy}, Current latency: {rt_latency}")
+        
+        latency_hat = 1 / (1+(rt_latency / self.latency_ref))
+        # Calculate base score
+        base_score = self.alpha * rt_accuracy + (1 - self.alpha) * latency_hat
+
+        if self.step < self.window:
+            if not hasattr(self.model_data[model_name], "score_history"):
+                self.model_data[model_name].score_history = []
+            self.model_data[model_name].score_history.append(base_score)
+            self.model_data[model_name].score = base_score
+            return
+
+        elif self.step == self.window:
+            # Calculate initial EMA using SMA
+            scores = self.model_data[model_name].score_history
+            sma = sum(scores) / len(scores)
+            self.model_data[model_name].ema = sma
+            # Clean up: discard score history after initial EMA
+            del self.model_data[model_name].score_history
+
+        else:
+            # Update EMA normally
+            prev_ema = self.model_data[model_name].ema
+            self.model_data[model_name].ema = self.beta * base_score + (1 - self.beta) * prev_ema
+
+        # Final score is adjusted by EMA
+        self.model_data[model_name].score = base_score * self.model_data[model_name].ema
+        # print(f"Final adjusted score: {self.model_data[model_name].score}")
+    =}
+
+    method select_model(){=
+        # print("\nModel Selection:")
+        # print(f"Current model scores: {[(model, data.score) for model, data in self.model_data.items()]}")
+        
+        if self.random.random() < self.epsilon:
+            # Exploration: pick a random model
+            selected_model = self.random.choice(list(self.model_data.keys()))
+            # print(f"Exploration: randomly selected model {selected_model}")
+        else:
+            # Exploitation: pick the one with the highest score
+            selected_model = max(self.model_data.items(), key=lambda item: item[1].score)[0]
+            # print(f"Exploitation: selected model {selected_model} with highest score {self.model_data[selected_model].score}")
+        return selected_model
+    =}
+
+    // @label Analyze
+    reaction(current_model, confidence, latency)-> next{=
+        if current_model.is_present and confidence.is_present and latency.is_present:
+            # print(f"\nAnalyze phase - Step {self.step}")
+            # print(f"Current model: {current_model.value}")
+            # print(f"Confidence: {confidence.value}")
+            # print(f"Latency: {latency.value}")
+            
+            self.compute_score(current_model.value, confidence.value, latency.value)
+            if self.step <= self.window:
+                self.step += 1
+            next.schedule(0)
+        else:
+            # print("Error: an input value is missing")
+            pass
+    =}
+
+    // @label Plan
+    reaction(next) -> selected_model {=
+        # print("\nPlan phase:")
+        model = self.select_model()
+        selected_model.set(model)
+        # print(f"Selected model {model} has been set as output")
+    =}
+
+    reaction(shutdown){=
+        print("\nShutting down MAPE reactor")
+        print("Final model states:")
+        for model, data in self.model_data.items():
+            print(f"Model {model}: score={data.score}, ema={data.ema if hasattr(data, 'ema') else 'N/A'}")
+    =}
+}

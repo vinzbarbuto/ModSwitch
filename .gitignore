@@ -1,0 +1,11 @@
+bin
+build
+fed-gen
+src-gen
+include
+Lingo.lock
+.DS_Store
+**/__pycache__
+**/*.lft
+**/*.csv
+**/*.html

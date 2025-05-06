@@ -1,0 +1,72 @@
+target Python {
+    keepalive: true,
+    single-threaded: true
+  }
+
+import MAPE from "lib/MAPE.lf"
+import DynamicDetector from "lib/Components.lf"
+import Camera from <edgeai/Input.lf>
+import DetectionVisualizer from <edgeai/Display.lf>
+
+main reactor Main {
+    preamble{=
+        from dataclasses import dataclass
+        import os
+
+        @dataclass
+        class ModelMetrics:
+            path: str
+            score: float
+            ema: float
+    =}
+
+    state model_data = {= { } =}
+    state input_file = "src/models.txt"
+
+    method read_file(){=
+        with open(self.input_file, "r") as file:
+            for line in file:
+                path = line.strip()
+                if not path.endswith(".tflite"):
+                    continue
+                model_name = self.os.path.splitext(self.os.path.basename(path))[0]
+                self.model_data[model_name] = self.ModelMetrics(path=path, score=0.0, ema=0.0)
+    =}
+
+    camera = new Camera(camera_id=1, fast = True, debug=True)
+    detector = new DynamicDetector(model_data={=self.model_data=})
+    mape = new MAPE(model_data={=self.model_data=})
+    visualizer = new DetectionVisualizer();
+
+    camera.camera_frame -> detector.frame
+    camera.camera_frame -> visualizer.original_frame
+    camera.camera_frame ~> camera.trigger
+    detector.inference_time -> visualizer.inference_time
+    detector.results -> visualizer.results
+    mape.selected_model -> detector.signal after 0
+    
+    reaction (startup){=
+        # Read the file containing the info about the model to use
+        self.read_file()
+        if not self.model_data:
+            print("Error: No model paths provided. Please include at least one.")
+            request_stop()
+        # Print the data structure created
+        for name, metrics in self.model_data.items():
+            print(f"{name}: {metrics}")
+    =}
+
+    reaction(detector.results, detector.inference_time, detector.model) -> mape.current_model, mape.confidence, mape.latency {=
+        if detector.results.is_present and detector.inference_time.is_present and detector.model.is_present:
+            scores_sum = 0
+            for res in detector.results.value:
+                scores_sum += res["score"]
+            mean_confidence = scores_sum / len(detector.results.value)
+            mape.current_model.set(detector.model.value)
+            mape.confidence.set(mean_confidence)
+            mape.latency.set(detector.inference_time.value)
+        else:
+            print("Error: input value are not present")
+    =}
+
+} 

@@ -1,0 +1,105 @@
+target Python
+
+
+reactor DynamicDetector(model_data={={ }=}) {
+
+    preamble {=
+        import random
+        import numpy as np
+        from tflite_support.task import vision, core, processor
+    =}
+
+    input frame
+    input signal
+
+    output results
+    output inference_time
+    output model
+
+    state model_paths = {= { } =}
+    state current_model = ""
+    state detector
+    state isSwitching = False
+    state switch_count = 0
+
+    method initialize_detector(model_path) {=
+        try:
+            base_options = self.core.BaseOptions(file_name=model_path)
+            detection_options = self.processor.DetectionOptions(max_results=1, score_threshold=0.3)
+            options = self.vision.ObjectDetectorOptions(base_options=base_options,
+                                                detection_options=detection_options)
+            self.detector = self.vision.ObjectDetector.create_from_options(options)
+            print(f"Successfully loaded model: {model_path}")
+            return True
+        except Exception as e:
+            print(f"Error initializing detector with model {model_path}: {e}")
+            return False
+    =}
+
+    method collect_results(detections){=
+        results_list = [
+            {
+                "index": detection.categories[0].index if detection.categories else None,
+                "label": detection.categories[0].category_name if detection.categories else None,
+                "box": detection.bounding_box,
+                "score": detection.categories[0].score if detection.categories else None
+            }
+            for detection in detections if detection
+        ]
+        return results_list;
+    =}
+
+    reaction(startup){=
+        if not self.isSwitching and self.model_data:
+            for name, metrics in self.model_data.items():
+                self.model_paths[name] = metrics.path
+            self.current_model = next(iter(self.model_paths))
+            model_path = self.model_paths[self.current_model]
+            self.initialize_detector(model_path)
+    =}
+
+    reaction(signal){=
+        nxt_model = signal.value
+        # print(f"Model received '{nxt_model}' ")
+        if nxt_model == self.current_model:
+            print(f"Model '{nxt_model}' is already active.")
+        elif nxt_model not in self.model_paths:
+            print(f"Error: Model '{nxt_model}' not found in known model paths. Cannot switch.")
+        else:
+            try:
+                print(f"Attempting to auto-switch model from '{self.current_model}' to '{nxt_model}'...")
+                model_path = self.model_paths[nxt_model]
+                load_successful = self.initialize_detector(model_path)
+                if load_successful:
+                    print(f"Successfully loaded and switched to model '{nxt_model}'.")
+                    self.current_model = nxt_model
+                    self.switch_count += 1
+                else:
+                    # Keep the previous model if loading fails
+                    print(f"Failed to initialize model '{nxt_model}'. Keeping '{self.current_model}'.")
+            finally:
+                # Ensure this flag is reset regardless of success or failure within the block
+                self.isSwitching = False
+    =}
+
+    reaction(frame)-> results, inference_time, model{=
+        if frame.is_present and frame.value is not None and not self.isSwitching:
+            # Detect objects in the input image and get the result.
+            tensor_input = self.vision.TensorImage.create_from_array(frame.value)
+            start = lf.time.physical()
+            result = self.detector.detect(tensor_input)
+            end = (lf.time.physical() - start) / 1000000
+            res = self.collect_results(result.detections)
+            value = res[0] if res else None
+            label = value.get("label") if value else None
+            score = value.get("score") if value else None
+            print(f"Model: {self.current_model} Label: {label}, Confidence: {score}, Time: {end}")
+            results.set(res)
+            inference_time.set(end)
+            model.set(self.current_model)
+    =}
+
+    reaction(shutdown){=
+        print(f"\nTotal model switches: {self.switch_count}")
+    =}
+}

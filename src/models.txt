@@ -1,0 +1,2 @@
+/Users/vincenzobarbuto/Desktop/LinguaFranca/ModSwitch/models/ssd_mobilenet_v2_coco_quant_postprocess.tflite
+/Users/vincenzobarbuto/Desktop/LinguaFranca/ModSwitch/models/ssd_mobilenet_v1.tflite
